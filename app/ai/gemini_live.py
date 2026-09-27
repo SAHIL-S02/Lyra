@@ -1,14 +1,16 @@
 import asyncio
-from app.memory.manager import MemoryManager
+
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-from app.memory.tools import (
-    MEMORY_FUNCTIONS,
-    MEMORY_TOOL_DECLARATIONS,
-)
-from .base import AIProvider
+
 from app.memory.manager import MemoryManager
+from app.tools.bootstrap import register_all_tools
+from app.tools.registry import tool_registry
+from app.tools.executor import tool_executor
+
+from .base import AIProvider
+
 
 load_dotenv()
 
@@ -21,6 +23,9 @@ class GeminiLiveProvider(AIProvider):
     def __init__(self) -> None:
         self.client = genai.Client()
         self.memory = MemoryManager()
+
+        # Make sure every registered Lyra tool is available.
+        register_all_tools()
 
     async def respond(self, text: str) -> str:
         """
@@ -48,6 +53,7 @@ class GeminiLiveProvider(AIProvider):
             response_text: list[str] = []
 
             async for response in session.receive():
+
                 if not response.server_content:
                     continue
 
@@ -86,6 +92,11 @@ class GeminiLiveProvider(AIProvider):
 
         if stop_event is None:
             stop_event = asyncio.Event()
+
+        # ---------------------------------------------------------
+        # LOAD LYRA IDENTITY FROM PERSISTENT MEMORY
+        # ---------------------------------------------------------
+
         identity = self.memory.get_lyra_identity()
 
         creator = identity.get(
@@ -97,11 +108,21 @@ class GeminiLiveProvider(AIProvider):
             "system_version",
             "not configured",
         )
+
+        # ---------------------------------------------------------
+        # GEMINI LIVE CONFIGURATION
+        # ---------------------------------------------------------
+
         config = types.LiveConnectConfig(
             response_modalities=["AUDIO"],
 
-            input_audio_transcription=types.AudioTranscriptionConfig(),
-            output_audio_transcription=types.AudioTranscriptionConfig(),
+            input_audio_transcription=(
+                types.AudioTranscriptionConfig()
+            ),
+
+            output_audio_transcription=(
+                types.AudioTranscriptionConfig()
+            ),
 
             system_instruction=f"""
 You are Lyra, a personal AI assistant.
@@ -165,11 +186,13 @@ IMPORTANT MEMORY RULES:
    - my_creator
    - creator_full_name
    - assistant_creator
+
    when the existing canonical key is:
    - creator
 
 5. Similarly, use:
    system_version
+
    for Lyra's application version.
 
 6. remember_memory may create a new memory when no existing
@@ -192,7 +215,7 @@ MEMORY UPDATE EXAMPLE
 
 Existing memory:
 
-creator = "S.K. Sahil Uddin"
+creator = "SK Sahil Uddin"
 
 User:
 "Don't use dots between S and K. Save it."
@@ -220,33 +243,86 @@ my_creator
 Do NOT create:
 
 creator_full_name
+
+========================
+WEB SEARCH
+========================
+
+You have access to Google Search.
+
+Use Google Search when the user asks for information that may
+be current, changing, recent, or external to your stored knowledge.
+
+Examples include:
+- latest news
+- current events
+- current prices
+- current software/library versions
+- recent releases
+- current sports information
+- today's weather
+- recent company or technology updates
+- information that requires checking the web
+
+Do not use web search for normal conversation when it is unnecessary.
+
+When current information is requested, prefer verified web information
+over your static knowledge.
+
+When using web search, answer naturally and concisely from the
+grounded information you receive.
+
+
 """,
 
+            # All currently registered Lyra tools.
             tools=[
+                # Lyra's custom tools
                 {
-                    "function_declarations": MEMORY_TOOL_DECLARATIONS
-                }
+                    "function_declarations": (
+                        tool_registry.gemini_declarations()
+                    )
+                },
+
+                # Gemini's native Google Search tool
+                {
+                    "google_search": {}
+                },
             ],
 
             realtime_input_config=types.RealtimeInputConfig(
-                automatic_activity_detection=types.AutomaticActivityDetection(
-                    disabled=False,
-                    prefix_padding_ms=40,
-                    silence_duration_ms=500,
+                automatic_activity_detection=(
+                    types.AutomaticActivityDetection(
+                        disabled=False,
+                        prefix_padding_ms=40,
+                        silence_duration_ms=500,
+                    )
                 )
             ),
         )
+
+        # ---------------------------------------------------------
+        # CONNECT TO GEMINI LIVE
+        # ---------------------------------------------------------
 
         async with self.client.aio.live.connect(
             model=self.MODEL,
             config=config,
         ) as session:
 
+            # -----------------------------------------------------
+            # SEND AUDIO TO GEMINI
+            # -----------------------------------------------------
+
             async def send_audio() -> None:
                 """Send microphone audio to Gemini Live."""
 
                 while True:
                     event_type, data = await audio_queue.get()
+
+                    # ---------------------------------------------
+                    # MICROPHONE AUDIO
+                    # ---------------------------------------------
 
                     if event_type == "AUDIO":
 
@@ -260,6 +336,10 @@ creator_full_name
                             )
                         )
 
+                    # ---------------------------------------------
+                    # END OF USER TURN
+                    # ---------------------------------------------
+
                     elif event_type == "END_OF_TURN":
 
                         print(
@@ -271,8 +351,71 @@ creator_full_name
                             audio_stream_end=True
                         )
 
+                    # ---------------------------------------------
+                    # STOP SESSION
+                    # ---------------------------------------------
+
                     elif event_type == "STOP":
                         return
+
+            # -----------------------------------------------------
+            # HANDLE GEMINI TOOL CALLS
+            # -----------------------------------------------------
+
+            async def handle_tool_call(tool_call) -> None:
+                """
+                Execute Gemini's requested tools through Lyra's
+                central ToolExecutor and return the results to Gemini.
+                """
+
+                function_responses = []
+
+                for function_call in tool_call.function_calls:
+
+                    tool_name = function_call.name
+                    arguments = dict(function_call.args or {})
+
+                    print(
+                        f"\n🔧 Tool call: {tool_name}",
+                        flush=True,
+                    )
+
+                    print(
+                        f"   Arguments: {arguments}",
+                        flush=True,
+                    )
+
+                    # Execute through the central tool executor.
+                    result = await tool_executor.execute(
+                        tool_name=tool_name,
+                        arguments=arguments,
+                    )
+
+                    print(
+                        f"   Result: {result}",
+                        flush=True,
+                    )
+
+                    function_responses.append(
+                        types.FunctionResponse(
+                            id=function_call.id,
+                            name=tool_name,
+                            response={
+                                "result": result,
+                            },
+                        )
+                    )
+
+                # Send all function results back to Gemini.
+                if function_responses:
+
+                    await session.send_tool_response(
+                        function_responses=function_responses
+                    )
+
+            # -----------------------------------------------------
+            # RECEIVE GEMINI RESPONSES
+            # -----------------------------------------------------
 
             async def receive_audio() -> None:
                 """Receive Gemini Live responses continuously."""
@@ -281,73 +424,28 @@ creator_full_name
 
                     async for response in session.receive():
 
-                        # ---------------------------------------------
-                        # FUNCTION / MEMORY TOOL CALLS
-                        # ---------------------------------------------
+                        # -----------------------------------------
+                        # TOOL CALL
+                        # -----------------------------------------
 
                         if response.tool_call:
-
-                            function_responses = []
-
-                            for function_call in response.tool_call.function_calls:
-
-                                name = function_call.name
-                                args = dict(function_call.args or {})
-
-                                print(
-                                    f"\n🔧 Tool call: {name}({args})",
-                                    flush=True,
-                                )
-
-                                function = MEMORY_FUNCTIONS.get(name)
-
-                                if function is None:
-
-                                    result = {
-                                        "success": False,
-                                        "error": f"Unknown tool: {name}",
-                                    }
-
-                                else:
-
-                                    try:
-                                        result = function(**args)
-
-                                    except Exception as exc:
-
-                                        result = {
-                                            "success": False,
-                                            "error": (
-                                                f"{type(exc).__name__}: {exc}"
-                                            ),
-                                        }
-
-                                function_responses.append(
-                                    types.FunctionResponse(
-                                        name=name,
-                                        id=function_call.id,
-                                        response=result,
-                                    )
-                                )
-
-                            await session.send_tool_response(
-                                function_responses=function_responses
+                            await handle_tool_call(
+                                response.tool_call
                             )
-
                             continue
 
-                        # ---------------------------------------------
+                        # -----------------------------------------
                         # NORMAL SERVER CONTENT
-                        # ---------------------------------------------
+                        # -----------------------------------------
 
                         if not response.server_content:
                             continue
 
                         server_content = response.server_content
 
-                        # ---------------------------------------------
+                        # -----------------------------------------
                         # BARGE-IN / INTERRUPTION
-                        # ---------------------------------------------
+                        # -----------------------------------------
 
                         if server_content.interrupted:
 
@@ -361,9 +459,9 @@ creator_full_name
 
                             continue
 
-                        # ---------------------------------------------
+                        # -----------------------------------------
                         # USER TRANSCRIPTION
-                        # ---------------------------------------------
+                        # -----------------------------------------
 
                         input_transcription = (
                             server_content.input_transcription
@@ -375,14 +473,15 @@ creator_full_name
                         ):
 
                             print(
-                                f"\nYou: {input_transcription.text}",
+                                f"\nYou: "
+                                f"{input_transcription.text}",
                                 end="",
                                 flush=True,
                             )
 
-                        # ---------------------------------------------
+                        # -----------------------------------------
                         # LYRA TRANSCRIPTION
-                        # ---------------------------------------------
+                        # -----------------------------------------
 
                         output_transcription = (
                             server_content.output_transcription
@@ -394,14 +493,15 @@ creator_full_name
                         ):
 
                             print(
-                                f"\nLyra: {output_transcription.text}",
+                                f"\nLyra: "
+                                f"{output_transcription.text}",
                                 end="",
                                 flush=True,
                             )
 
-                        # ---------------------------------------------
+                        # -----------------------------------------
                         # LYRA AUDIO
-                        # ---------------------------------------------
+                        # -----------------------------------------
 
                         model_turn = server_content.model_turn
 
@@ -417,9 +517,9 @@ creator_full_name
                                 if audio_data:
                                     playback.add(audio_data)
 
-                        # ---------------------------------------------
+                        # -----------------------------------------
                         # TURN COMPLETE
-                        # ---------------------------------------------
+                        # -----------------------------------------
 
                         if server_content.turn_complete:
 
@@ -427,6 +527,11 @@ creator_full_name
                                 "\n",
                                 flush=True,
                             )
+
+            # -----------------------------------------------------
+            # WAIT FOR CONTROLLER STOP EVENT
+            # -----------------------------------------------------
+
             async def wait_for_stop() -> None:
                 """Wait until the controller requests shutdown."""
 
@@ -437,7 +542,13 @@ creator_full_name
                     flush=True,
                 )
 
-                await audio_queue.put(("STOP", b""))
+                await audio_queue.put(
+                    ("STOP", b"")
+                )
+
+            # -----------------------------------------------------
+            # CREATE ASYNC TASKS
+            # -----------------------------------------------------
 
             send_task = asyncio.create_task(
                 send_audio()
@@ -451,7 +562,12 @@ creator_full_name
                 wait_for_stop()
             )
 
+            # -----------------------------------------------------
+            # RUN SESSION
+            # -----------------------------------------------------
+
             try:
+
                 done, pending = await asyncio.wait(
                     {
                         send_task,
@@ -461,18 +577,24 @@ creator_full_name
                     return_when=asyncio.FIRST_COMPLETED,
                 )
 
-                # If the controller requested stop,
-                # the STOP event will terminate send_audio().
+                # -------------------------------------------------
+                # CONTROLLER REQUESTED STOP
+                # -------------------------------------------------
+
                 if stop_task in done:
+
                     if not send_task.done():
                         await send_task
 
-                # Any unexpected task completion means
-                # the session should terminate as well.
+                # -------------------------------------------------
+                # UNEXPECTED TASK COMPLETION
+                # -------------------------------------------------
+
                 else:
                     stop_event.set()
 
             except asyncio.CancelledError:
+
                 stop_event.set()
 
                 send_task.cancel()
@@ -488,7 +610,12 @@ creator_full_name
 
                 raise
 
+            # -----------------------------------------------------
+            # CLEANUP
+            # -----------------------------------------------------
+
             finally:
+
                 stop_event.set()
 
                 for task in (
@@ -496,6 +623,7 @@ creator_full_name
                     receive_task,
                     stop_task,
                 ):
+
                     if not task.done():
                         task.cancel()
 
