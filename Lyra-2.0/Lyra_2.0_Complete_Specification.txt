@@ -1,0 +1,1489 @@
+LYRA 2.0 — COMPLETE PROJECT SPECIFICATION / BUILD CONTEXT
+===========================================================
+
+PURPOSE
+-------
+Lyra 2.0 is a new-from-scratch personal AI voice assistant designed to be
+LOCAL-FIRST, WEB-ASSISTED, TOOL-AWARE, VOICE-DRIVEN, and deployable on a
+CPU-only final machine.
+
+This document is intended to be supplied to an AI coding agent such as
+Antigravity as the primary project context.
+
+The user should experience only one assistant:
+    LYRA
+
+Internal models/providers are implementation details. Do not make Lyra's
+identity depend on a particular AI provider.
+
+
+1. LYRA 1.0 AND LYRA 2.0
+========================
+
+LYRA 1.0
+--------
+Lyra 1.0 is an already-working project and should be preserved as a stable
+version. Its main architecture used Gemini Live, local wake-word detection,
+voice input/output, persistent SQLite memory, tool calling, inactivity sleep,
+and barge-in.
+
+Lyra 1.0 should remain frozen while 2.0 is developed.
+
+The stable release was tagged:
+    v1.0.0
+
+LYRA 2.0
+--------
+Lyra 2.0 is a NEW project built from scratch.
+
+Do not simply modify Lyra 1.0 into 2.0.
+Do not make Gemini Live the main brain.
+
+The new primary architecture is:
+
+    Wake Word
+        ↓
+    STT
+        ↓
+    AI Router
+        ↓
+    Local LLM by default
+        ↓
+    Web search when fresh/external information is needed
+        ↓
+    Tools when action/data access is required
+        ↓
+    TTS
+        ↓
+    Speaker
+
+
+2. CORE PRODUCT GOAL
+====================
+
+NORMAL REQUESTS
+---------------
+Use the local LLM.
+
+Example:
+    User: "Explain recursion."
+    Router: LOCAL
+    LLM: Qwen3 1.7B
+    TTS: speak answer
+
+CURRENT / EXTERNAL INFORMATION
+------------------------------
+Use web search, then provide the retrieved information to the local LLM
+for synthesis.
+
+Example:
+    User: "What is the latest Python release?"
+    Router: WEB / HYBRID
+    Search: obtain current information
+    Local LLM: synthesize answer
+    TTS: speak answer
+
+TOOL REQUEST
+------------
+Use the appropriate tool.
+
+Example:
+    User: "What time is it?"
+    Router: TOOL
+    Tool: get_current_time
+
+The user should not have to know whether the answer came from a local model,
+web retrieval, or a tool.
+
+
+3. HARDWARE
+===========
+
+DEVELOPMENT MACHINE
+-------------------
+CPU: Intel Core i7-14700HX
+RAM: 16 GB
+GPU: NVIDIA RTX 4050 Laptop GPU
+VRAM: 6 GB
+
+Use the development machine for:
+- development
+- debugging
+- model experiments
+- GPU-accelerated STT
+- performance testing
+
+FINAL DEPLOYMENT MACHINE
+------------------------
+CPU: AMD dual-core processor
+RAM: 16 GB
+GPU: none
+
+The final application MUST work without CUDA or an NVIDIA GPU.
+Design for:
+- CPU inference
+- low RAM usage
+- low idle CPU usage
+- small/quantized models
+- CPU STT
+- CPU TTS
+- continuous 24/7 operation
+
+The actual AMD CPU should be benchmarked before finalizing model/STT/TTS
+settings. A dual-core CPU may become the latency bottleneck even though 16 GB
+RAM is sufficient for a small model.
+
+
+4. PRIMARY LOCAL LLM
+=====================
+
+Current selected local model:
+    Qwen3 1.7B
+
+Runtime:
+    Ollama
+
+Current installed model:
+    qwen3:1.7b
+
+Ollama host:
+    http://localhost:11434
+
+Relevant API:
+    http://localhost:11434/api/chat
+
+The model was already installed and successfully verified through:
+    http://localhost:11434/api/tags
+
+The installed model is approximately 1.36 GB in the current environment.
+
+The local model is the DEFAULT Lyra brain.
+
+Design the local-provider layer so the model can later be changed through
+configuration without rewriting Lyra Core.
+
+
+5. OVERALL ARCHITECTURE
+=======================
+
+                         LYRA 2.0
+                             │
+                       Wake Word Engine
+                             │
+                            STT
+                             │
+                       AI / Intent Router
+                             │
+            ┌────────────────┼────────────────┐
+            │                │                │
+            ▼                ▼                ▼
+          LOCAL             WEB              TOOL
+            │                │                │
+        Qwen3 1.7B       Search/Web      Memory/System/
+        through Ollama                  Spotify/Home/etc.
+            │                │                │
+            └────────────────┼────────────────┘
+                             ▼
+                      Context / Results
+                             ▼
+                        Local LLM
+                             ▼
+                            TTS
+                             ▼
+                          Speaker
+
+The web layer is NOT a second brain. It is an information-retrieval layer.
+
+
+6. ROUTING MODES
+================
+
+The router should support these modes:
+
+    LOCAL
+    WEB
+    TOOL
+    HYBRID
+
+LOCAL
+-----
+Use for normal timeless requests that are suitable for the local model.
+
+Examples:
+- explanations
+- writing
+- brainstorming
+- simple coding help
+- normal conversation
+- basic reasoning
+
+WEB
+---
+Use when information must be current or externally verified.
+
+Examples:
+- latest news
+- today's events
+- current weather
+- current prices
+- latest software versions
+- recent releases
+- current company/technology information
+- user explicitly says search/look up/check online
+
+TOOL
+----
+Use for deterministic actions/data retrieval through an application tool.
+
+Examples:
+- time/date
+- system information
+- memory actions
+- Spotify commands
+- smart-home commands
+- application control
+
+HYBRID
+------
+Use when web/tool output must be passed into the local LLM to produce the
+final natural-language answer.
+
+
+7. ROUTER DESIGN PRINCIPLES
+===========================
+
+Do NOT trust a small local LLM's self-reported confidence as the sole signal
+for whether it knows something.
+
+The router should use explicit deterministic signals plus model/task logic.
+
+Current-information triggers can include:
+- latest
+- today
+- current
+- recent
+- live
+- this week
+- this month
+- current version
+- current price
+- weather
+- news
+- score
+- release
+- recent update
+
+Explicit search triggers can include:
+- search the web
+- search online
+- look up
+- find online
+- check the internet
+- search for
+
+The router should eventually consider:
+1. Does this require current information?
+2. Does this require an external tool?
+3. Does this use private/local information?
+4. Does this require complex reasoning?
+5. Is internet available?
+6. Is low latency important?
+7. Is the request suitable for the local model?
+
+If internet is unavailable, normal LOCAL requests must continue to work.
+
+If a request requires current information and web access fails, Lyra must NOT
+fabricate the current answer.
+
+
+8. WEB SEARCH
+=============
+
+Web search should be provider-independent.
+
+Desired flow:
+
+    User request
+        ↓
+    Search provider
+        ↓
+    Relevant retrieved information
+        ↓
+    Local Qwen3
+        ↓
+    Final answer
+
+Do not permanently hard-code one search provider into the entire Lyra
+architecture.
+
+Potential providers can be swapped later.
+
+The web layer should return structured results such as:
+- title
+- URL/source
+- snippet/content
+- publication date when available
+- source metadata when available
+
+Do not over-search ordinary questions.
+
+
+9. VOICE PIPELINE
+=================
+
+Target end-to-end behavior:
+
+    Microphone
+        ↓
+    Wake Word
+        ↓
+    STT
+        ↓
+    Router
+        ↓
+    Local LLM / Web / Tool
+        ↓
+    Response
+        ↓
+    TTS
+        ↓
+    Speaker
+
+The system should work hands-free.
+
+
+10. WAKE WORD
+=============
+
+Wake word:
+    "Hey Lyra"
+
+A custom Hey Lyra model has already been trained for Lyra 1.0.
+Reusable assets include:
+- hey_lyra.onnx
+- hey_lyra.tflite
+
+The wake-word system was based on openWakeWord.
+
+A previous training run produced approximately:
+- accuracy: 0.8625
+- recall: 0.7324
+- false positives/hour: 8.67
+
+Do not retrain unnecessarily.
+Reuse the trained Hey Lyra model where practical.
+
+Wake word MUST be local and work while the internet is unavailable.
+
+
+11. STT
+=======
+
+Technology:
+    faster-whisper
+
+Previously tested:
+- faster-whisper large-v3-turbo style setup
+- CUDA on RTX 4050
+- float16
+- CTranslate2 CUDA device detected
+
+DEVELOPMENT:
+    use GPU acceleration where appropriate
+
+FINAL CPU MACHINE:
+    use CPU-compatible inference
+    prefer int8 for resource efficiency
+
+The final AMD dual-core machine may need a smaller STT model than the
+large development model. Benchmark accuracy vs latency before finalizing.
+
+STT must be provider-independent inside Lyra. The rest of the system should
+not depend on faster-whisper-specific classes.
+
+
+12. TTS
+=======
+
+TTS must be local.
+
+Previously tested:
+    Kokoro TTS
+
+Potential CPU-friendly alternative:
+    Piper or another lightweight local TTS
+
+Do not make cloud TTS mandatory.
+
+The TTS layer should support:
+- low latency
+- local inference
+- interruption/stop
+- configurable voice/provider
+
+
+13. BARGE-IN
+===========
+
+Desired behavior:
+
+    Lyra is speaking
+        ↓
+    User starts speaking
+        ↓
+    Stop/discard current playback immediately
+        ↓
+    Listen/process the new request
+
+The playback system should support:
+- queued audio
+- immediate clear/discard
+- low-latency interruption
+
+A response that has been interrupted must not continue playing afterward.
+
+
+14. AUTO-SLEEP
+==============
+
+Lyra should sleep after configurable inactivity.
+
+Existing tested value:
+    30 seconds
+
+Desired flow:
+
+    Active conversation
+        ↓
+    No user speech for timeout
+        ↓
+    End active processing/session if needed
+        ↓
+    Sleeping
+        ↓
+    Local wake-word listener remains active
+
+When sleeping, avoid unnecessary cloud/network activity.
+
+
+15. STATE MACHINE
+=================
+
+Use explicit states.
+
+Suggested states:
+
+    SLEEPING
+    WAKE_DETECTED
+    LISTENING
+    PROCESSING
+    SPEAKING
+    IDLE
+    ERROR
+
+Suggested flow:
+
+    SLEEPING
+       ↓
+    WAKE_DETECTED
+       ↓
+    LISTENING
+       ↓
+    PROCESSING
+       ↓
+    SPEAKING
+       ↓
+    IDLE
+       ↓
+    SLEEPING
+
+Errors should recover safely rather than killing the whole assistant.
+
+
+16. MEMORY
+==========
+
+Lyra requires persistent long-term memory.
+
+Memory is separate from model weights.
+
+Recommended storage:
+    SQLite
+
+Previously established fields:
+- id
+- key
+- value
+- category
+- retention
+- source
+- created_at
+- updated_at
+- last_accessed_at
+
+Categories:
+- fact
+- preference
+- event
+- profile
+- other
+
+Retention:
+- permanent
+- episodic
+
+Important behavior:
+Do NOT save every casual sentence.
+
+Explicit memory requests should create/update memory.
+
+Examples:
+
+    "Remember that my favorite language is Java."
+        -> remember_memory
+
+    "What is my favorite language?"
+        -> search_memory
+
+    "Change my favorite language to Python."
+        -> find existing key
+        -> update_memory
+
+    "Forget my favorite language."
+        -> forget_memory
+
+Memory remains an external editable database property, not fine-tuning.
+
+
+17. MEMORY KEY NORMALIZATION
+============================
+
+Canonical keys are important.
+
+Example aliases that must not create separate memories:
+
+    creator_name
+    creator_full_name
+    my_creator
+    assistant_creator
+    lyra_creator
+
+Canonical key:
+    creator
+
+Similarly:
+
+    version
+    lyra_version
+
+should resolve to:
+    system_version
+
+When changing an existing memory:
+1. search for the existing record when required
+2. use its exact key/category
+3. update the existing memory
+4. do not invent a duplicate alias
+
+
+18. TOOL SYSTEM
+===============
+
+Use a centralized Tool Registry and Tool Executor.
+
+Architecture:
+
+    Tool Definition
+        ↓
+    Tool Registry
+        ↓
+    Tool Executor
+        ↓
+    Actual Tool
+        ↓
+    Structured Result
+
+ToolDefinition should contain:
+- name
+- description
+- handler
+- parameters/schema
+- requires_confirmation
+
+Registry responsibilities:
+- register tools
+- reject duplicate names
+- list tools
+- retrieve a specific tool
+- provide model-facing declarations/schema
+
+Executor responsibilities:
+- confirm that tool exists
+- execute sync and async handlers
+- catch failures
+- return structured results
+- enforce confirmation requirement
+
+Example success result:
+
+    {
+        "success": True,
+        "tool": "get_current_time",
+        "result": {...}
+    }
+
+Example failure:
+
+    {
+        "success": False,
+        "tool": "unknown_tool",
+        "error": "Unknown tool: unknown_tool"
+    }
+
+
+19. EXISTING / INITIAL TOOLS
+============================
+
+Memory:
+- remember_memory
+- search_memory
+- update_memory
+- forget_memory
+
+System:
+- get_current_time
+- get_system_info
+
+get_current_time should return:
+- date
+- time
+- timezone
+- ISO timestamp
+
+get_system_info should return:
+- hostname
+- OS
+- OS release
+- OS version
+- architecture
+- Python version
+- processor
+
+These tools were already successfully prototyped/tested in Lyra 1.0.
+
+
+20. TOOL SECURITY
+=================
+
+NEVER provide unrestricted shell execution to the LLM.
+
+Do not implement:
+    execute_shell_command(user_input)
+
+All actions must go through explicit, validated tools.
+
+Suggested permission levels:
+
+SAFE:
+- current time/date
+- system status
+- non-sensitive information
+
+CONFIRMATION:
+- open an application
+- send a message
+- change media state
+- non-destructive external actions
+
+SENSITIVE:
+- delete files
+- shutdown/restart
+- locks
+- financial actions
+- account operations
+- irreversible changes
+
+Sensitive actions should require explicit confirmation and eventually
+authentication.
+
+
+21. SYSTEM / COMPUTER TOOLS
+===========================
+
+Future planned tools:
+- open_application
+- volume_up
+- volume_down
+- mute
+- system status
+- lock computer
+- controlled scripts
+
+Application control must use allowlisted/known actions, not unrestricted
+command execution.
+
+
+22. SPOTIFY
+===========
+
+Future integration.
+
+Desired capabilities:
+- search
+- play
+- pause
+- resume
+- next
+- previous
+- shuffle
+- repeat
+- current track
+- volume
+- playlist control
+
+Use Spotify OAuth.
+Keep tokens outside the LLM.
+
+Architecture:
+
+    User
+      ↓
+    Local LLM / Router
+      ↓
+    Spotify Tool
+      ↓
+    Spotify API
+
+
+23. SMART HOME
+==============
+
+Future architecture:
+
+    AI
+      ↓
+    Lyra Tool
+      ↓
+    Home Service
+      ↓
+    MQTT
+      ↓
+    ESP32
+      ↓
+    Relay / Sensor
+
+The AI model must NEVER manipulate ESP32 GPIO directly.
+
+Use:
+- device registry
+- validation
+- permissions
+- MQTT abstraction
+- tool layer
+
+Sensitive actions need stronger confirmation/authentication.
+
+ESP32 devices are nodes, not the main AI brain.
+
+
+24. PROVIDER ABSTRACTION
+========================
+
+Lyra 2.0 should support interchangeable AI providers.
+
+Provider abstraction should allow at least:
+- respond/chat
+- streaming where supported
+- health check
+- close/shutdown
+
+Potential providers:
+- Ollama local
+- Gemini (optional)
+- other cloud providers
+- future local runtimes
+
+The core should not know which provider is active.
+
+Configuration should determine the provider.
+
+
+25. LOCAL PROVIDER
+==================
+
+Local provider implementation:
+    Ollama
+
+Default configuration:
+
+    OLLAMA_HOST=http://localhost:11434
+    OLLAMA_MODEL=qwen3:1.7b
+
+Provider requirements:
+- health check server
+- verify model installed
+- send chat request
+- handle timeout
+- handle connection errors
+- return clean text
+- support streaming in a later iteration
+- expose model/provider status
+
+Use an abstraction so Ollama can later be replaced without changing the
+router or voice controller.
+
+
+26. CONFIGURATION
+=================
+
+Centralize configuration.
+
+Suggested values:
+
+    LYRA_VERSION=2.0.0
+    LYRA_AI_PROVIDER=local
+
+    OLLAMA_HOST=http://localhost:11434
+    OLLAMA_MODEL=qwen3:1.7b
+
+    WAKE_WORD=Hey Lyra
+
+    MEMORY_DB=data/lyra_memory.db
+
+    STT_DEVICE=cpu
+    STT_COMPUTE_TYPE=int8
+
+    TTS_PROVIDER=kokoro
+
+Do not scatter hard-coded settings around the application.
+
+Use .env for secrets/config that are environment-specific.
+Never commit .env.
+
+
+27. DEVELOPMENT / FINAL PROFILES
+================================
+
+DEVELOPMENT PROFILE
+-------------------
+Hardware:
+    i7-14700HX / 16 GB / RTX 4050 6 GB
+
+Suggested:
+    LLM: Qwen3 1.7B via Ollama
+    STT: faster-whisper with CUDA/float16 where beneficial
+    TTS: Kokoro
+    wake word: local Hey Lyra model
+
+FINAL PROFILE
+-------------
+Hardware:
+    AMD dual-core / 16 GB / CPU only
+
+Suggested:
+    LLM: Qwen3 1.7B or smaller model if benchmark requires it
+    STT: faster-whisper CPU/int8, potentially smaller model
+    TTS: CPU-friendly local TTS
+    wake word: local Hey Lyra
+
+One codebase, profile-dependent settings.
+
+
+28. PROJECT STRUCTURE
+=====================
+
+Recommended Lyra 2.0 structure:
+
+Lyra-2.0/
+|
+├── app/
+│   ├── __init__.py
+│   │
+│   ├── ai/
+│   │   ├── __init__.py
+│   │   ├── base.py
+│   │   ├── local_provider.py
+│   │   ├── router.py
+│   │   └── prompts.py
+│   │
+│   ├── voice/
+│   │   ├── __init__.py
+│   │   ├── controller.py
+│   │   ├── wake_word.py
+│   │   ├── stt.py
+│   │   ├── tts.py
+│   │   ├── vad.py
+│   │   └── audio_output.py
+│   │
+│   ├── tools/
+│   │   ├── __init__.py
+│   │   ├── registry.py
+│   │   ├── executor.py
+│   │   ├── bootstrap.py
+│   │   ├── memory_tools.py
+│   │   ├── system_tools.py
+│   │   └── web_tools.py
+│   │
+│   ├── memory/
+│   │   ├── __init__.py
+│   │   ├── database.py
+│   │   ├── manager.py
+│   │   └── tools.py
+│   │
+│   └── core/
+│       ├── __init__.py
+│       ├── config.py
+│       ├── state.py
+│       └── logging.py
+│
+├── models/
+│   ├── wakeword/
+│   ├── stt/
+│   └── tts/
+│
+├── data/
+│   └── lyra_memory.db
+│
+├── tests/
+├── run_lyra.py
+├── .env
+└── .gitignore
+
+
+29. REUSABLE LYRA 1.0 ASSETS
+============================
+
+Possible reusable assets:
+- trained Hey Lyra ONNX model
+- trained Hey Lyra TFLite model
+- tested STT approach
+- tested TTS approach
+- memory schema/concepts
+- tool registry/executor concepts
+
+Do NOT blindly copy the old controller/AI architecture.
+Rebuild the architectural core for local-first 2.0.
+
+
+30. MEMORY DATABASE SEPARATION
+==============================
+
+Lyra 2.0 should initially use its own database:
+    Lyra-2.0/data/lyra_memory.db
+
+Do NOT directly share Lyra 1.0's SQLite database file.
+
+A future controlled migration can be created:
+
+    Lyra 1.0 Memory
+        ↓
+    Migration/validation
+        ↓
+    Lyra 2.0 Memory
+
+This avoids cross-version corruption or accidental schema conflicts.
+
+
+31. PERSONALIZATION
+===================
+
+Personalization should primarily use:
+- persistent memory
+- system prompt/personality configuration
+- preferences
+- project context
+- optional future fine-tuning
+
+Do NOT treat fine-tuning as the memory mechanism.
+Memory remains editable and persistent outside model weights.
+
+
+32. RAG / DOCUMENT KNOWLEDGE
+============================
+
+Future feature.
+
+Desired pipeline:
+
+    Document
+        ↓
+    Text extraction
+        ↓
+    Chunking
+        ↓
+    Embeddings
+        ↓
+    Vector database
+        ↓
+    Retrieval
+        ↓
+    Local LLM
+        ↓
+    Answer
+
+Example:
+    "Explain deadlock based on my OS notes."
+
+This should be added later; it must not block the initial voice assistant.
+
+
+33. OFFLINE BEHAVIOR
+====================
+
+When internet is unavailable:
+
+    "What is a binary tree?"
+        -> LOCAL
+        -> Qwen3
+        -> answer
+
+For a current-information request:
+
+    "What is today's NVIDIA news?"
+        -> WEB required
+        -> web unavailable
+        -> clearly state current web information cannot be retrieved
+        -> do not fabricate
+
+Normal local tasks should keep working without internet.
+
+
+34. CLOUD PROVIDERS
+===================
+
+Gemini Live was the main provider in Lyra 1.0.
+
+For 2.0, Gemini is OPTIONAL.
+
+Reasons for making it optional:
+- API quota/rate limits
+- provider independence
+- local-first goal
+- final CPU-only deployment
+- offline operation
+
+Potential future cloud role:
+- complex reasoning
+- optional voice mode
+- fallback
+- special tasks
+- model comparison/evaluation
+
+But Lyra 2.0 basic functionality MUST NOT depend on Gemini.
+
+
+35. LOGGING
+===========
+
+Use structured/configurable logging.
+
+Log:
+- startup/shutdown
+- state transitions
+- wake-word detections
+- routing decisions
+- STT timings
+- LLM latency
+- TTS latency
+- tool calls
+- tool failures
+- web failures
+- provider failures
+
+Do not log:
+- API keys
+- auth tokens
+- sensitive private data unnecessarily
+
+
+36. ERROR RECOVERY
+==================
+
+Ollama unavailable:
+    report local provider unavailable
+    optionally use an explicitly configured fallback
+    keep wake-word system alive if possible
+
+STT failure:
+    return safely to listening/wake state
+
+TTS failure:
+    log and recover
+
+Web failure:
+    return structured failure
+    do not hallucinate current information
+
+Tool failure:
+    return structured failure to the LLM
+    allow natural user-facing explanation
+
+Unexpected errors:
+    log
+    recover/reinitialize affected subsystem when possible
+    keep main assistant alive
+
+
+37. PERFORMANCE / BENCHMARKING
+==============================
+
+Benchmark on both development and final hardware.
+
+Measure:
+- startup time
+- model load time
+- first-token latency
+- tokens/sec
+- STT latency
+- TTS latency
+- end-to-end voice latency
+- peak RAM
+- idle RAM
+- active CPU
+- idle CPU
+- wake-word CPU usage
+
+Final optimization priorities:
+- small quantized model
+- limited context length
+- low background CPU
+- no unnecessary parallel model work
+- model keep-alive only when practical
+- CPU-friendly STT/TTS
+
+
+38. TESTING STRATEGY
+====================
+
+Build and test one subsystem at a time.
+
+Recommended tests:
+
+    test_config.py
+    test_local_llm.py
+    test_router.py
+    test_web_search.py
+    test_stt.py
+    test_tts.py
+    test_wake_word.py
+    test_memory.py
+    test_tools.py
+    test_voice_controller.py
+
+Each subsystem should test:
+- normal path
+- invalid input
+- unavailable dependency
+- timeout/failure
+- recovery
+
+Then run an end-to-end voice test.
+
+
+39. DEVELOPMENT ROADMAP
+=======================
+
+PHASE 1 — FOUNDATION
+--------------------
+1. project structure
+2. configuration
+3. logging
+4. state machine
+5. clean startup/shutdown
+6. health checks
+
+PHASE 2 — LOCAL AI
+------------------
+7. Ollama health check
+8. Qwen3 local provider
+9. local chat test
+10. streaming support
+11. provider abstraction
+
+PHASE 3 — AI ROUTER
+-------------------
+12. LOCAL route
+13. WEB route
+14. TOOL route
+15. HYBRID route
+16. internet availability check
+17. routing rules
+18. fallback behavior
+
+PHASE 4 — VOICE
+---------------
+19. microphone service
+20. STT
+21. TTS
+22. wake word
+23. VAD
+24. voice controller
+25. barge-in
+26. inactivity sleep
+
+PHASE 5 — MEMORY
+----------------
+27. SQLite
+28. memory manager
+29. remember
+30. search
+31. update
+32. forget
+33. canonical keys
+34. memory context
+
+PHASE 6 — TOOLS
+---------------
+35. registry
+36. executor
+37. system tools
+38. web tools
+39. permission levels
+40. confirmation flow
+
+PHASE 7 — INTEGRATIONS
+----------------------
+41. Spotify
+42. MQTT
+43. smart-home service
+44. device registry
+45. safe computer control
+
+PHASE 8 — OPTIMIZATION
+----------------------
+46. startup optimization
+47. RAM optimization
+48. CPU optimization
+49. latency optimization
+50. final AMD benchmark
+
+PHASE 9 — DEPLOYMENT
+--------------------
+51. Windows/Linux startup service
+52. crash recovery
+53. health monitor
+54. logging/diagnostics
+55. backup/restore
+56. update mechanism
+57. v2.0.0 release
+
+
+40. ANTIGRAVITY BUILD RULES
+===========================
+
+Use these rules when an AI coding agent builds Lyra 2.0:
+
+1. Lyra 2.0 is a fresh project.
+2. Keep Lyra 1.0 untouched.
+3. Build incrementally.
+4. Test each subsystem independently.
+5. Never rewrite the whole project unnecessarily.
+6. Preserve already-tested assets where appropriate.
+7. Keep provider implementations behind an abstraction.
+8. Keep tool implementations behind the registry/executor.
+9. Never expose arbitrary shell execution.
+10. Keep secrets outside Git.
+11. Prefer local inference.
+12. Use web only when needed.
+13. Web search is retrieval, not a second brain.
+14. Pass web results to the local model for synthesis.
+15. Make state transitions explicit.
+16. Support barge-in and cancellation.
+17. Support inactivity sleep.
+18. Design for CPU-only final hardware.
+19. Do not require NVIDIA/CUDA in the final deployment.
+20. Make settings configurable.
+21. Do not use Lyra 1.0's database directly.
+22. Do not fabricate current information when web is unavailable.
+23. Do not assume the local model can reliably judge its own knowledge.
+24. Keep the assistant identity as Lyra independent of the backend model.
+25. Create tests alongside features.
+
+
+41. RECOMMENDED ANTIGRAVITY MASTER PROMPT
+==========================================
+
+You are building Lyra 2.0 from scratch.
+
+Lyra 2.0 is a personal AI voice assistant whose primary design principle is
+LOCAL FIRST.
+
+PRIMARY BRAIN:
+    Qwen3 1.7B through Ollama
+
+DEFAULT BEHAVIOR:
+    Use the local LLM for normal tasks.
+
+CURRENT / EXTERNAL DATA:
+    Search the web when the request requires fresh, changing, or externally
+    verified information. Pass the retrieved data to the local LLM and let
+    the local model produce the final natural-language answer.
+
+TOOLS:
+    Use explicit tools for memory, system functions, Spotify, smart home, and
+    future capabilities.
+
+VOICE:
+    Hey Lyra wake word
+    local STT
+    AI Router
+    local/web/tools
+    local TTS
+
+DEVELOPMENT HARDWARE:
+    i7-14700HX
+    16 GB RAM
+    RTX 4050 6 GB
+
+FINAL HARDWARE:
+    AMD dual-core
+    16 GB RAM
+    CPU only
+
+DESIGN REQUIREMENT:
+    One codebase must work on both profiles.
+    The final profile cannot depend on CUDA or an NVIDIA GPU.
+
+OLLAMA:
+    http://localhost:11434
+
+MODEL:
+    qwen3:1.7b
+
+WAKE WORD:
+    Hey Lyra
+
+STT:
+    faster-whisper
+    GPU acceleration during development
+    CPU/int8 configuration for final deployment
+
+TTS:
+    local; Kokoro is a tested option, with a lightweight CPU alternative
+    available if final benchmarking requires it.
+
+MEMORY:
+    SQLite persistent long-term memory
+    explicit save/update/delete behavior
+    canonical keys
+
+TOOLS:
+    central registry + central executor
+    no unrestricted shell execution
+
+ROUTER:
+    LOCAL
+    WEB
+    TOOL
+    HYBRID
+
+The local model is the default brain.
+Do not make Gemini mandatory. Cloud providers may be optional future backends.
+
+Build in small verified phases. Add tests. Keep Lyra 1.0 unchanged.
+
+START HERE:
+    1. configuration
+    2. logging
+    3. core state
+    4. Ollama health check
+    5. Qwen3 provider
+    6. local LLM test
+
+Do not implement the entire assistant in one step.
+Complete and test each subsystem before integrating the next.
+
+
+42. FINAL USER EXPERIENCE / DEFINITION OF DONE
+===============================================
+
+Target user flow:
+
+    Lyra starts
+        ↓
+    wake-word listener active locally
+        ↓
+    "Hey Lyra"
+        ↓
+    Lyra wakes
+        ↓
+    User speaks
+        ↓
+    STT
+        ↓
+    Router
+        ↓
+    LOCAL / WEB / TOOL / HYBRID
+        ↓
+    Answer/action
+        ↓
+    TTS
+        ↓
+    Speaker
+        ↓
+    Follow-up conversation
+        ↓
+    Barge-in works if the user interrupts
+        ↓
+    Inactivity timeout
+        ↓
+    Sleep
+        ↓
+    Hey Lyra
+        ↓
+    New conversation
+
+Lyra 2.0 is production-ready when:
+
+- Hey Lyra reliably wakes the assistant.
+- Normal questions are answered locally.
+- Fresh/current questions use web retrieval.
+- Web results are synthesized by the local LLM.
+- Memory persists across restarts.
+- Memory can be created/searched/updated/deleted safely.
+- Tools execute through the registry/executor.
+- STT is local.
+- TTS is local.
+- Barge-in works.
+- Inactivity sleep works.
+- Local requests continue to work without internet.
+- Web failures do not cause fabricated current information.
+- The system runs acceptably on the AMD dual-core + 16 GB final machine.
+- There is no NVIDIA/CUDA requirement for final deployment.
+- Provider selection is configurable.
+- The project has automated tests.
+- Startup and shutdown are clean.
+- Errors are recoverable.
+- Secrets are not committed.
+
+
+43. ONE-SCREEN SUMMARY
+======================
+
+Lyra 2.0 =
+
+    LOCAL-FIRST
+    + Qwen3 1.7B / Ollama
+    + Web retrieval when needed
+    + Local STT
+    + Local TTS
+    + Hey Lyra wake word
+    + VAD / barge-in / sleep
+    + Persistent SQLite memory
+    + Central tool registry/executor
+    + Provider abstraction
+    + CPU-only final deployment
+
+Development:
+    i7-14700HX / 16 GB / RTX 4050 6 GB
+
+Final:
+    AMD dual-core / 16 GB / CPU only
+
+The final user experience must remain:
+
+    ONE ASSISTANT
+    =
+    LYRA
+
+regardless of which internal model, web provider, or tool is used.
